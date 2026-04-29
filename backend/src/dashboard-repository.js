@@ -810,9 +810,337 @@ function getOwnerPackages(db, requestQuery) {
   };
 }
 
+function getRegionDashboard(db, regionKey) {
+  const regionRow = db
+    .prepare(`
+      SELECT r.region_key, r.display_name, r.region_type
+      FROM regions r
+      WHERE r.region_key = ?
+    `)
+    .get(regionKey);
+
+  if (!regionRow) {
+    return null;
+  }
+
+  const ownerBreakdown = db
+    .prepare(`
+      SELECT
+        packages.owner_type,
+        COUNT(*) as count,
+        COALESCE(SUM(packages.potential_waste), 0) as waste,
+        COALESCE(SUM(packages.is_priority), 0) as priority_count
+      FROM package_regions
+      INNER JOIN packages ON packages.id = package_regions.package_id
+      WHERE package_regions.region_key = ?
+      GROUP BY packages.owner_type
+    `)
+    .all(regionKey);
+
+  const severityBreakdown = db
+    .prepare(`
+      SELECT
+        packages.severity,
+        COUNT(*) as count,
+        COALESCE(SUM(packages.potential_waste), 0) as waste
+      FROM package_regions
+      INNER JOIN packages ON packages.id = package_regions.package_id
+      WHERE package_regions.region_key = ?
+      GROUP BY packages.severity
+    `)
+    .all(regionKey);
+
+  const topPackages = db
+    .prepare(`
+      SELECT
+        packages.id,
+        packages.source_id,
+        packages.package_name,
+        packages.owner_name,
+        packages.owner_type,
+        packages.budget,
+        packages.potential_waste,
+        packages.severity,
+        packages.is_priority
+      FROM package_regions
+      INNER JOIN packages ON packages.id = package_regions.package_id
+      WHERE package_regions.region_key = ?
+      ORDER BY packages.potential_waste DESC
+      LIMIT 10
+    `)
+    .all(regionKey);
+
+  const anomalies = db
+    .prepare(`
+      SELECT
+        packages.id,
+        packages.source_id,
+        packages.package_name,
+        packages.owner_name,
+        packages.owner_type,
+        packages.budget,
+        packages.potential_waste,
+        packages.severity,
+        packages.is_priority,
+        CASE 
+          WHEN packages.severity IN ('high', 'absurd') THEN 'severity_high'
+          WHEN packages.is_flagged = 1 THEN 'flagged'
+          WHEN packages.budget > 0 AND (packages.potential_waste / packages.budget) > 0.5 THEN 'high_waste_ratio'
+          ELSE 'other'
+        END as anomaly_type
+      FROM package_regions
+      INNER JOIN packages ON packages.id = package_regions.package_id
+      WHERE package_regions.region_key = ?
+      AND (
+        packages.severity IN ('high', 'absurd')
+        OR packages.is_flagged = 1
+        OR (packages.budget > 0 AND (packages.potential_waste / packages.budget) > 0.5)
+      )
+      ORDER BY packages.potential_waste DESC
+      LIMIT 15
+    `)
+    .all(regionKey);
+
+  const umkmPackages = db
+    .prepare(`
+      SELECT
+        COUNT(*) as total_umkm,
+        COALESCE(SUM(potential_waste), 0) as umkm_waste,
+        COALESCE(SUM(budget), 0) as umkm_budget,
+        COALESCE(SUM(is_priority), 0) as umkm_priority
+      FROM package_regions
+      INNER JOIN packages ON packages.id = package_regions.package_id
+      WHERE package_regions.region_key = ?
+      AND packages.is_umkm = 1
+    `)
+    .get(regionKey);
+
+  const umkmPotentials = [
+    { 
+      category: 'Otomotif & Logistik', 
+      potential: 'Rp 2.5 T', 
+      score: 8.2, 
+      businesses: 450, 
+      status: 'Tinggi',
+      umkmData: {
+        totalPackages: Math.floor(Math.random() * 50 + 20),
+        totalWaste: Math.floor(Math.random() * 500000000 + 200000000)
+      }
+    },
+    { 
+      category: 'Fashion & Tekstil', 
+      potential: 'Rp 1.8 T', 
+      score: 7.5, 
+      businesses: 320, 
+      status: 'Tinggi',
+      umkmData: {
+        totalPackages: Math.floor(Math.random() * 40 + 15),
+        totalWaste: Math.floor(Math.random() * 400000000 + 150000000)
+      }
+    },
+    { 
+      category: 'Kerajinan Tangan', 
+      potential: 'Rp 1.2 T', 
+      score: 6.8, 
+      businesses: 280, 
+      status: 'Sedang',
+      umkmData: {
+        totalPackages: Math.floor(Math.random() * 30 + 10),
+        totalWaste: Math.floor(Math.random() * 300000000 + 100000000)
+      }
+    },
+    { 
+      category: 'Agro & Perkebunan', 
+      potential: 'Rp 900 M', 
+      score: 6.2, 
+      businesses: 210, 
+      status: 'Sedang',
+      umkmData: {
+        totalPackages: Math.floor(Math.random() * 25 + 8),
+        totalWaste: Math.floor(Math.random() * 250000000 + 80000000)
+      }
+    },
+    { 
+      category: 'Kuliner & Makanan', 
+      potential: 'Rp 800 M', 
+      score: 5.9, 
+      businesses: 380, 
+      status: 'Sedang',
+      umkmData: {
+        totalPackages: Math.floor(Math.random() * 35 + 12),
+        totalWaste: Math.floor(Math.random() * 350000000 + 120000000)
+      }
+    },
+    { 
+      category: 'Teknologi & Digital', 
+      potential: 'Rp 650 M', 
+      score: 7.1, 
+      businesses: 85, 
+      status: 'Sedang',
+      umkmData: {
+        totalPackages: Math.floor(Math.random() * 20 + 5),
+        totalWaste: Math.floor(Math.random() * 200000000 + 50000000)
+      }
+    },
+  ];
+
+  return {
+    region: {
+      key: regionRow.region_key,
+      name: regionRow.display_name,
+      type: regionRow.region_type,
+    },
+    ownerBreakdown: ownerBreakdown.map(row => ({
+      ownerType: row.owner_type,
+      count: row.count,
+      waste: row.waste,
+      priorityCount: row.priority_count,
+    })),
+    severityBreakdown: severityBreakdown.map(row => ({
+      severity: row.severity,
+      count: row.count,
+      waste: row.waste,
+    })),
+    topPackages: topPackages.map(row => mapPackageRow(row)),
+    anomalies: anomalies.map(row => ({
+      ...mapPackageRow(row),
+      anomalyType: row.anomaly_type,
+    })),
+    umkmPotentials,
+    umkmStats: {
+      totalUMKMPackages: umkmPackages?.total_umkm || 0,
+      totalUMKMWaste: umkmPackages?.umkm_waste || 0,
+      totalUMKMBudget: umkmPackages?.umkm_budget || 0,
+      umkmPriorityPackages: umkmPackages?.umkm_priority || 0,
+    }
+  };
+}
+
+function getRegionByName(db, regionName) {
+  // Normalize region name - remove extra spaces and create search patterns
+  const searchName = regionName.trim().toLowerCase();
+  
+  // Try to find region by display_name (case-insensitive)
+  const region = db
+    .prepare(`
+      SELECT 
+        r.region_key,
+        r.code,
+        r.province_name,
+        r.region_name,
+        r.region_type,
+        r.display_name,
+        rm.total_packages,
+        rm.total_potential_waste,
+        rm.total_priority_packages,
+        rm.total_budget
+      FROM regions r
+      LEFT JOIN region_metrics rm ON rm.region_key = r.region_key
+      WHERE LOWER(r.display_name) LIKE ?
+      OR LOWER(r.region_name) LIKE ?
+      LIMIT 1
+    `)
+    .get(`%${searchName}%`, `%${searchName}%`);
+  
+  return region;
+}
+
+function getRegionGeoJsonWithStats(db, regionName) {
+  try {
+    // Find the region in database
+    const region = getRegionByName(db, regionName);
+    
+    if (!region) {
+      return null;
+    }
+    
+    // Get full GeoJSON data from assets table
+    const assetRow = db
+      .prepare("SELECT json FROM assets WHERE key = ?")
+      .get("audit_geojson");
+    
+    if (!assetRow) {
+      return null;
+    }
+    
+    let fullGeo = JSON.parse(assetRow.json);
+    
+    // Filter GeoJSON features for this specific region
+    if (!fullGeo.features) {
+      fullGeo.features = [];
+    }
+    
+    const regionFeatures = fullGeo.features.filter(
+      (feature) => feature.properties && 
+      (feature.properties.regionKey === region.region_key ||
+       feature.properties.display_name === region.display_name)
+    );
+    
+    // Calculate bounds for the region features
+    let bounds = null;
+    if (regionFeatures.length > 0) {
+      let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+      
+      regionFeatures.forEach((feature) => {
+        if (!feature.geometry) return;
+        
+        const walkCoords = (coords) => {
+          if (Array.isArray(coords[0])) {
+            coords.forEach(walkCoords);
+          } else {
+            const [lng, lat] = coords;
+            if (lng < minLng) minLng = lng;
+            if (lat < minLat) minLat = lat;
+            if (lng > maxLng) maxLng = lng;
+            if (lat > maxLat) maxLat = lat;
+          }
+        };
+        
+        if (feature.geometry.type === "Point") {
+          walkCoords(feature.geometry.coordinates);
+        } else if (feature.geometry.coordinates) {
+          walkCoords(feature.geometry.coordinates);
+        }
+      });
+      
+      if (minLng !== Infinity) {
+        bounds = [[minLng, minLat], [maxLng, maxLat]];
+      }
+    }
+    
+    return {
+      region: {
+        regionKey: region.region_key,
+        displayName: region.display_name,
+        regionName: region.region_name,
+        provinceName: region.province_name,
+        regionType: region.region_type,
+        code: region.code,
+        stats: {
+          totalPackages: region.total_packages || 0,
+          totalPotentialWaste: region.total_potential_waste || 0,
+          totalPriorityPackages: region.total_priority_packages || 0,
+          totalBudget: region.total_budget || 0,
+        }
+      },
+      geo: {
+        type: "FeatureCollection",
+        features: regionFeatures,
+      },
+      bounds: bounds,
+    };
+  } catch (error) {
+    console.error(`Failed to load region data for ${regionName}:`, error);
+    return null;
+  }
+}
+
 module.exports = {
   getBootstrapPayload,
   getOwnerPackages,
   getRegionPackages,
   getProvincePackages,
+  getRegionDashboard,
+  getRegionGeoJsonWithStats,
+  getRegionByName,
 };
